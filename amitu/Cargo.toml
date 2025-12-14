@@ -1,0 +1,19 @@
+[package]
+name = "amitu"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.wasm-pack.profile.release]
+# The issue is that wasm-pack isn't passing the --enable-bulk-memory flag to
+# wasm-opt. Rust 1.92 emits bulk memory operations by default, but wasm-opt
+# needs to be told to accept them.
+#
+# So we disable wasm-opt and call it from scripts/build.sh.
+wasm-opt = false
+
+[dependencies]
+fastn.workspace = true
+wasm-bindgen.workspace = true
