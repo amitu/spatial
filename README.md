@@ -8,8 +8,6 @@ $ brew install binaryen
 $ wasm-opt --version
 wasm-opt version 125
 
-$ brew install sdl2
-
 $ wasm-pack build amitu --target web
 $ ./scripts/build.sh
 $ python3 -m http.server 8088
