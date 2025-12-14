@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -e -x
+
 wasm-pack build amitu --target web
 
 # refer [package.metadata.wasm-pack.profile.release] in amitu/Cargo.toml.
