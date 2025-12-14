@@ -16,4 +16,6 @@ wasm-opt = false
 
 [dependencies]
 fastn.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
