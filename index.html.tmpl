@@ -154,6 +154,11 @@
         addLog('navigator.xr not available', 'warn');
     }
 
+    // WebXR rendering state
+    let xrRefSpace = null;
+    let xrGlLayer = null;
+    let gl = null;
+
     // Enter/Exit VR handler
     enterVrBtn.addEventListener('click', async () => {
         if (xrSession) {
@@ -173,21 +178,207 @@
             enterVrBtn.textContent = 'Exit VR';
             enterVrBtn.classList.add('exit-vr');
 
+            // Find the canvas created by wgpu/winit
+            const canvas = document.querySelector('canvas');
+            if (!canvas) {
+                addLog('No canvas found!', 'error');
+                await xrSession.end();
+                return;
+            }
+            addLog('Found canvas: ' + canvas.width + 'x' + canvas.height);
+
+            // Get WebGL2 context - wgpu should have already created it
+            // Use {xrCompatible: true} to make it work with WebXR
+            gl = canvas.getContext('webgl2', { xrCompatible: true });
+            if (!gl) {
+                addLog('Failed to get WebGL2 context', 'error');
+                await xrSession.end();
+                return;
+            }
+            addLog('Got WebGL2 context');
+
+            // Make context XR compatible if not already
+            await gl.makeXRCompatible();
+            addLog('WebGL context is XR compatible');
+
+            // Create XR layer
+            xrGlLayer = new XRWebGLLayer(xrSession, gl);
+            addLog('Created XRWebGLLayer: ' + xrGlLayer.framebufferWidth + 'x' + xrGlLayer.framebufferHeight);
+
+            // Set render state
+            await xrSession.updateRenderState({
+                baseLayer: xrGlLayer
+            });
+            addLog('Set XR render state');
+
+            // Get reference space
+            xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
+            addLog('Got local-floor reference space');
+
             xrSession.addEventListener('end', () => {
                 addLog('VR session ended');
                 xrSession = null;
+                xrRefSpace = null;
+                xrGlLayer = null;
                 enterVrBtn.textContent = 'Enter VR';
                 enterVrBtn.classList.remove('exit-vr');
             });
 
-            // TODO: Set up XR rendering
-            // For now, just log that we're in VR
-            addLog('VR session active - rendering not yet implemented');
+            // Start XR render loop
+            xrSession.requestAnimationFrame(onXRFrame);
+            addLog('XR render loop started');
 
         } catch (e) {
-            addLog('Failed to start VR: ' + e, 'error');
+            addLog('Failed to start VR: ' + e.message || e, 'error');
+            console.error(e);
         }
     });
+
+    // XR frame rendering
+    function onXRFrame(time, frame) {
+        if (!xrSession) return;
+
+        // Request next frame first
+        xrSession.requestAnimationFrame(onXRFrame);
+
+        const pose = frame.getViewerPose(xrRefSpace);
+        if (!pose) {
+            return; // No pose yet
+        }
+
+        // Bind the XR framebuffer
+        gl.bindFramebuffer(gl.FRAMEBUFFER, xrGlLayer.framebuffer);
+
+        // Clear to a color so we know it's working
+        gl.clearColor(0.1, 0.1, 0.3, 1.0); // Dark blue
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        // Render each view (one per eye)
+        for (const view of pose.views) {
+            const viewport = xrGlLayer.getViewport(view);
+            gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+
+            // Get view and projection matrices
+            const viewMatrix = view.transform.inverse.matrix;
+            const projMatrix = view.projectionMatrix;
+
+            // TODO: Pass these matrices to wgpu/Rust for actual rendering
+            // For now, just draw a simple colored quad to prove it works
+            drawSimpleScene(gl, viewMatrix, projMatrix);
+        }
+    }
+
+    // Simple WebGL rendering to test XR is working
+    let simpleProgram = null;
+    let cubeBuffer = null;
+
+    function drawSimpleScene(gl, viewMatrix, projMatrix) {
+        if (!simpleProgram) {
+            // Create a simple shader program
+            const vsSource = `
+                attribute vec3 aPosition;
+                uniform mat4 uView;
+                uniform mat4 uProj;
+                uniform mat4 uModel;
+                varying vec3 vColor;
+                void main() {
+                    gl_Position = uProj * uView * uModel * vec4(aPosition, 1.0);
+                    vColor = aPosition * 0.5 + 0.5; // Color based on position
+                }
+            `;
+            const fsSource = `
+                precision mediump float;
+                varying vec3 vColor;
+                void main() {
+                    gl_FragColor = vec4(vColor, 1.0);
+                }
+            `;
+
+            const vs = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vs, vsSource);
+            gl.compileShader(vs);
+            if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+                addLog('VS error: ' + gl.getShaderInfoLog(vs), 'error');
+                return;
+            }
+
+            const fs = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fs, fsSource);
+            gl.compileShader(fs);
+            if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+                addLog('FS error: ' + gl.getShaderInfoLog(fs), 'error');
+                return;
+            }
+
+            simpleProgram = gl.createProgram();
+            gl.attachShader(simpleProgram, vs);
+            gl.attachShader(simpleProgram, fs);
+            gl.linkProgram(simpleProgram);
+            if (!gl.getProgramParameter(simpleProgram, gl.LINK_STATUS)) {
+                addLog('Program error: ' + gl.getProgramInfoLog(simpleProgram), 'error');
+                return;
+            }
+
+            // Create cube vertices
+            const vertices = new Float32Array([
+                // Front face
+                -1, -1,  1,   1, -1,  1,   1,  1,  1,
+                -1, -1,  1,   1,  1,  1,  -1,  1,  1,
+                // Back face
+                -1, -1, -1,  -1,  1, -1,   1,  1, -1,
+                -1, -1, -1,   1,  1, -1,   1, -1, -1,
+                // Top face
+                -1,  1, -1,  -1,  1,  1,   1,  1,  1,
+                -1,  1, -1,   1,  1,  1,   1,  1, -1,
+                // Bottom face
+                -1, -1, -1,   1, -1, -1,   1, -1,  1,
+                -1, -1, -1,   1, -1,  1,  -1, -1,  1,
+                // Right face
+                 1, -1, -1,   1,  1, -1,   1,  1,  1,
+                 1, -1, -1,   1,  1,  1,   1, -1,  1,
+                // Left face
+                -1, -1, -1,  -1, -1,  1,  -1,  1,  1,
+                -1, -1, -1,  -1,  1,  1,  -1,  1, -1,
+            ]);
+
+            cubeBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, cubeBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+            addLog('Created simple WebGL cube renderer');
+        }
+
+        gl.useProgram(simpleProgram);
+
+        // Set up vertex attribute
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeBuffer);
+        const posLoc = gl.getAttribLocation(simpleProgram, 'aPosition');
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+        // Set uniforms
+        const viewLoc = gl.getUniformLocation(simpleProgram, 'uView');
+        const projLoc = gl.getUniformLocation(simpleProgram, 'uProj');
+        const modelLoc = gl.getUniformLocation(simpleProgram, 'uModel');
+
+        gl.uniformMatrix4fv(viewLoc, false, viewMatrix);
+        gl.uniformMatrix4fv(projLoc, false, projMatrix);
+
+        // Model matrix: place cube 2 meters in front of user
+        const modelMatrix = new Float32Array([
+            0.3, 0, 0, 0,
+            0, 0.3, 0, 0,
+            0, 0, 0.3, 0,
+            0, 1, -2, 1  // x, y (1m up), z (-2m in front)
+        ]);
+        gl.uniformMatrix4fv(modelLoc, false, modelMatrix);
+
+        // Enable depth test
+        gl.enable(gl.DEPTH_TEST);
+
+        // Draw cube
+        gl.drawArrays(gl.TRIANGLES, 0, 36);
+    }
 
     // Toggle debug log visibility with 'D' key or button
     const toggleConsoleBtn = document.getElementById('toggle-console');
