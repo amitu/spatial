@@ -53,10 +53,59 @@
         #enter-vr:active { background: #3d8b40; }
         #enter-vr.exit-vr { background: #f44336; }
         #enter-vr.exit-vr:hover { background: #da190b; }
+        #toggle-console {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 8px 12px;
+            font-size: 14px;
+            background: #333;
+            color: white;
+            border: 1px solid #666;
+            border-radius: 5px;
+            cursor: pointer;
+            z-index: 10000;
+        }
+        #toggle-console:hover { background: #444; }
+        #status-bar {
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-family: monospace;
+            font-size: 12px;
+            color: white;
+            z-index: 9997;
+        }
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #666;
+        }
+        .status-dot.connected { background: #ff0; }
+        .status-dot.working { background: #0f0; }
     </style>
 </head>
 <body>
 <div id="debug-log"></div>
+<button id="toggle-console">Console</button>
+<div id="status-bar">
+    <div class="status-item">
+        <span class="status-dot" id="gamepad-dot"></span>
+        <span id="gamepad-status">No gamepad</span>
+    </div>
+</div>
 <button id="enter-vr">Enter VR</button>
 <script>
     // On-screen debug console for Quest/mobile
@@ -140,12 +189,69 @@
         }
     });
 
-    // Toggle debug log visibility with 'D' key
+    // Toggle debug log visibility with 'D' key or button
+    const toggleConsoleBtn = document.getElementById('toggle-console');
+    toggleConsoleBtn.addEventListener('click', () => {
+        debugLog.classList.toggle('hidden');
+    });
     document.addEventListener('keydown', (e) => {
         if (e.key === 'd' || e.key === 'D') {
             debugLog.classList.toggle('hidden');
         }
     });
+
+    // Gamepad status tracking
+    const gamepadDot = document.getElementById('gamepad-dot');
+    const gamepadStatus = document.getElementById('gamepad-status');
+    let gamepadConnected = false;
+    let gamepadWorking = false;
+    let lastGamepadTimestamp = 0;
+
+    window.addEventListener('gamepadconnected', (e) => {
+        gamepadConnected = true;
+        gamepadDot.className = 'status-dot connected';
+        gamepadStatus.textContent = e.gamepad.id.substring(0, 20) + '...';
+        addLog('Gamepad connected: ' + e.gamepad.id);
+    });
+
+    window.addEventListener('gamepaddisconnected', (e) => {
+        gamepadConnected = false;
+        gamepadWorking = false;
+        gamepadDot.className = 'status-dot';
+        gamepadStatus.textContent = 'No gamepad';
+        addLog('Gamepad disconnected: ' + e.gamepad.id);
+    });
+
+    // Poll gamepad to detect input (working status)
+    function pollGamepad() {
+        const gamepads = navigator.getGamepads();
+        for (const gp of gamepads) {
+            if (!gp) continue;
+
+            // Check if timestamp changed (input received)
+            if (gp.timestamp > lastGamepadTimestamp) {
+                lastGamepadTimestamp = gp.timestamp;
+                if (!gamepadWorking && gamepadConnected) {
+                    gamepadWorking = true;
+                    gamepadDot.className = 'status-dot working';
+                    addLog('Gamepad input detected - working!');
+                }
+            }
+
+            // Also check axes/buttons for any non-zero values
+            if (!gamepadWorking && gamepadConnected) {
+                const hasInput = gp.axes.some(a => Math.abs(a) > 0.1) ||
+                                 gp.buttons.some(b => b.pressed);
+                if (hasInput) {
+                    gamepadWorking = true;
+                    gamepadDot.className = 'status-dot working';
+                    addLog('Gamepad input detected - working!');
+                }
+            }
+        }
+        requestAnimationFrame(pollGamepad);
+    }
+    pollGamepad();
 </script>
 <script type="module">
     import init from './{{JS_FILE}}';
