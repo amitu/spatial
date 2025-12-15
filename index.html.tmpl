@@ -275,15 +275,18 @@
 
             // TODO: Pass these matrices to wgpu/Rust for actual rendering
             // For now, just draw a simple colored quad to prove it works
-            drawSimpleScene(gl, viewMatrix, projMatrix);
+            drawSimpleScene(gl, viewMatrix, projMatrix, time);
         }
     }
 
     // Simple WebGL rendering to test XR is working
     let simpleProgram = null;
     let cubeBuffer = null;
+    let cubeRotation = 0;
 
-    function drawSimpleScene(gl, viewMatrix, projMatrix) {
+    function drawSimpleScene(gl, viewMatrix, projMatrix, time) {
+        // Update rotation
+        cubeRotation = time * 0.001; // Rotate based on time
         if (!simpleProgram) {
             // Create a simple shader program
             const vsSource = `
@@ -375,11 +378,15 @@
         gl.uniformMatrix4fv(viewLoc, false, viewMatrix);
         gl.uniformMatrix4fv(projLoc, false, projMatrix);
 
-        // Model matrix: place cube 2 meters in front of user
+        // Model matrix: place cube 2 meters in front of user, rotating
+        const c = Math.cos(cubeRotation);
+        const s = Math.sin(cubeRotation);
+        const scale = 0.3;
+        // Rotation around Y axis + translation
         const modelMatrix = new Float32Array([
-            0.3, 0, 0, 0,
-            0, 0.3, 0, 0,
-            0, 0, 0.3, 0,
+            scale * c,  0, scale * s, 0,
+            0,          scale, 0,     0,
+            -scale * s, 0, scale * c, 0,
             0, 1, -2, 1  // x, y (1m up), z (-2m in front)
         ]);
         gl.uniformMatrix4fv(modelLoc, false, modelMatrix);
