@@ -49,7 +49,7 @@ jobs:
           sudo mv binaryen-version_121/bin/wasm-opt /usr/local/bin/
 
       - name: Build
-        run: ./scripts/build.sh
+        run: ./fastn-spatial/scripts/fastn-build.sh amitu
 
       - name: Prepare pages
         run: |
