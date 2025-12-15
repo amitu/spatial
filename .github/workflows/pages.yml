@@ -59,6 +59,8 @@ jobs:
 
       - name: Build
         run: ./fastn-spatial/scripts/fastn-build.sh amitu
+        env:
+          RUSTFLAGS: --cfg=web_sys_unstable_apis
 
       - name: Prepare pages
         run: |
