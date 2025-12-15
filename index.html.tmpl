@@ -13,9 +13,140 @@
             overflow: hidden;
             background: #1a1a2e;
         }
+        #debug-log {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            max-height: 40%;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.8);
+            color: #0f0;
+            font-family: monospace;
+            font-size: 12px;
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 9999;
+            pointer-events: none;
+        }
+        #debug-log.hidden { display: none; }
+        .log-info { color: #0f0; }
+        .log-warn { color: #ff0; }
+        .log-error { color: #f00; }
+        #enter-vr {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 15px 40px;
+            font-size: 18px;
+            font-weight: bold;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            z-index: 9998;
+            display: none;
+        }
+        #enter-vr:hover { background: #45a049; }
+        #enter-vr:active { background: #3d8b40; }
+        #enter-vr.exit-vr { background: #f44336; }
+        #enter-vr.exit-vr:hover { background: #da190b; }
     </style>
 </head>
 <body>
+<div id="debug-log"></div>
+<button id="enter-vr">Enter VR</button>
+<script>
+    // On-screen debug console for Quest/mobile
+    const debugLog = document.getElementById('debug-log');
+    const maxLines = 50;
+
+    function addLog(msg, type = 'info') {
+        const line = document.createElement('div');
+        line.className = 'log-' + type;
+        line.textContent = msg;
+        debugLog.appendChild(line);
+        // Keep only last N lines
+        while (debugLog.children.length > maxLines) {
+            debugLog.removeChild(debugLog.firstChild);
+        }
+        debugLog.scrollTop = debugLog.scrollHeight;
+    }
+
+    // Intercept console methods
+    const origLog = console.log;
+    const origWarn = console.warn;
+    const origError = console.error;
+    const origInfo = console.info;
+
+    console.log = (...args) => { origLog(...args); addLog(args.join(' '), 'info'); };
+    console.info = (...args) => { origInfo(...args); addLog(args.join(' '), 'info'); };
+    console.warn = (...args) => { origWarn(...args); addLog(args.join(' '), 'warn'); };
+    console.error = (...args) => { origError(...args); addLog(args.join(' '), 'error'); };
+
+    // WebXR state
+    let xrSession = null;
+    const enterVrBtn = document.getElementById('enter-vr');
+
+    // Show WebXR status and button if supported
+    if (navigator.xr) {
+        navigator.xr.isSessionSupported('immersive-vr').then(supported => {
+            addLog('WebXR immersive-vr: ' + (supported ? 'SUPPORTED' : 'not supported'), supported ? 'info' : 'warn');
+            if (supported) {
+                enterVrBtn.style.display = 'block';
+                addLog('Enter VR button shown');
+            }
+        }).catch(e => {
+            addLog('WebXR check failed: ' + e, 'error');
+        });
+    } else {
+        addLog('navigator.xr not available', 'warn');
+    }
+
+    // Enter/Exit VR handler
+    enterVrBtn.addEventListener('click', async () => {
+        if (xrSession) {
+            // Exit VR
+            addLog('Exiting VR session...');
+            await xrSession.end();
+            return;
+        }
+
+        try {
+            addLog('Requesting immersive-vr session...');
+            xrSession = await navigator.xr.requestSession('immersive-vr', {
+                requiredFeatures: ['local-floor']
+            });
+            addLog('VR session started!', 'info');
+
+            enterVrBtn.textContent = 'Exit VR';
+            enterVrBtn.classList.add('exit-vr');
+
+            xrSession.addEventListener('end', () => {
+                addLog('VR session ended');
+                xrSession = null;
+                enterVrBtn.textContent = 'Enter VR';
+                enterVrBtn.classList.remove('exit-vr');
+            });
+
+            // TODO: Set up XR rendering
+            // For now, just log that we're in VR
+            addLog('VR session active - rendering not yet implemented');
+
+        } catch (e) {
+            addLog('Failed to start VR: ' + e, 'error');
+        }
+    });
+
+    // Toggle debug log visibility with 'D' key
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'd' || e.key === 'D') {
+            debugLog.classList.toggle('hidden');
+        }
+    });
+</script>
 <script type="module">
     import init from './{{JS_FILE}}';
     init();
