@@ -178,28 +178,39 @@
             enterVrBtn.textContent = 'Exit VR';
             enterVrBtn.classList.add('exit-vr');
 
-            // Find the canvas created by wgpu/winit
-            const canvas = document.querySelector('canvas');
-            if (!canvas) {
-                addLog('No canvas found!', 'error');
-                await xrSession.end();
-                return;
-            }
-            addLog('Found canvas: ' + canvas.width + 'x' + canvas.height);
+            // Use pre-created xrCompatible context, or try to get one
+            if (window.xrGlContext) {
+                gl = window.xrGlContext;
+                addLog('Using pre-created xrCompatible WebGL2 context');
+            } else {
+                // Fallback: try to find canvas and get context
+                const canvas = document.querySelector('canvas');
+                if (!canvas) {
+                    addLog('No canvas found!', 'error');
+                    await xrSession.end();
+                    return;
+                }
+                addLog('Found canvas: ' + canvas.width + 'x' + canvas.height);
 
-            // Get WebGL2 context - wgpu should have already created it
-            // Use {xrCompatible: true} to make it work with WebXR
-            gl = canvas.getContext('webgl2', { xrCompatible: true });
-            if (!gl) {
-                addLog('Failed to get WebGL2 context', 'error');
-                await xrSession.end();
-                return;
-            }
-            addLog('Got WebGL2 context');
+                // Try to get existing context (won't work if wgpu created it without xrCompatible)
+                gl = canvas.getContext('webgl2');
+                if (!gl) {
+                    addLog('Failed to get WebGL2 context', 'error');
+                    await xrSession.end();
+                    return;
+                }
+                addLog('Got WebGL2 context (may not be xrCompatible)');
 
-            // Make context XR compatible if not already
-            await gl.makeXRCompatible();
-            addLog('WebGL context is XR compatible');
+                // Try to make it XR compatible
+                try {
+                    await gl.makeXRCompatible();
+                    addLog('Made context XR compatible');
+                } catch (e) {
+                    addLog('Failed to make context XR compatible: ' + e.message, 'error');
+                    await xrSession.end();
+                    return;
+                }
+            }
 
             // Create XR layer
             xrGlLayer = new XRWebGLLayer(xrSession, gl);
@@ -446,7 +457,49 @@
 </script>
 <script type="module">
     import init from './{{JS_FILE}}';
-    init();
+
+    // Pre-create a canvas with xrCompatible context before wgpu initializes
+    // This ensures WebXR can use the same context later
+    async function setupAndInit() {
+        if (navigator.xr) {
+            try {
+                const supported = await navigator.xr.isSessionSupported('immersive-vr');
+                if (supported) {
+                    console.log('Pre-creating xrCompatible canvas for WebXR...');
+
+                    // Create canvas element
+                    const canvas = document.createElement('canvas');
+                    canvas.id = 'wgpu-canvas';
+                    document.body.appendChild(canvas);
+
+                    // Get WebGL2 context with xrCompatible
+                    const gl = canvas.getContext('webgl2', {
+                        xrCompatible: true,
+                        alpha: false,
+                        antialias: true,
+                        depth: true,
+                        stencil: false,
+                        powerPreference: 'high-performance'
+                    });
+
+                    if (gl) {
+                        await gl.makeXRCompatible();
+                        console.log('Canvas is xrCompatible, stored for WebXR use');
+                        // Store gl context globally for WebXR to use later
+                        window.xrGlContext = gl;
+                        window.xrCanvas = canvas;
+                    }
+                }
+            } catch (e) {
+                console.log('WebXR pre-setup failed (non-fatal):', e);
+            }
+        }
+
+        // Now initialize wgpu/fastn
+        init();
+    }
+
+    setupAndInit();
 </script>
 </body>
 </html>
