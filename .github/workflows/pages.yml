@@ -48,20 +48,16 @@ jobs:
           tar xzf binaryen-version_121-x86_64-linux.tar.gz
           sudo mv binaryen-version_121/bin/wasm-opt /usr/local/bin/
 
-      - name: Build WASM
-        run: |
-          wasm-pack build amitu --target web
-          wasm-opt amitu/pkg/amitu_bg.wasm -o amitu/pkg/amitu_bg.wasm -O \
-            --enable-bulk-memory \
-            --enable-nontrapping-float-to-int
+      - name: Build
+        run: ./scripts/build.sh
 
       - name: Prepare pages
         run: |
-          mkdir -p _site/amitu/pkg
+          mkdir -p _site
           cp index.html _site/
           cp cube.glb _site/
-          cp amitu/pkg/*.js _site/amitu/pkg/
-          cp amitu/pkg/*.wasm _site/amitu/pkg/
+          cp *.js _site/
+          cp *.wasm _site/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
