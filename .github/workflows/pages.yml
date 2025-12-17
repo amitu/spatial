@@ -51,13 +51,32 @@ jobs:
       - name: Prepare pages
         run: |
           mkdir -p _site
-          # Copy web shell (index.html + shell.js)
+
+          # Generate content hash for cache busting
+          WASM_HASH=$(sha256sum target/wasm32-unknown-unknown/release/amitu.wasm | cut -c1-8)
+          WASM_FILE="amitu.${WASM_HASH}.wasm"
+
+          # Copy web shell
           cp fastn-spatial/fastn-shell-web/index.html _site/
           cp fastn-spatial/fastn-shell-web/shell.js _site/
-          # Copy WASM app
-          cp target/wasm32-unknown-unknown/release/amitu.wasm _site/
-          # Update shell.js to load amitu.wasm instead of cube.wasm
-          sed -i "s|const WASM_PATH = './cube.wasm'|const WASM_PATH = './amitu.wasm'|" _site/shell.js
+
+          # Copy WASM with hashed filename
+          cp target/wasm32-unknown-unknown/release/amitu.wasm "_site/${WASM_FILE}"
+
+          # Update shell.js to load hashed WASM
+          sed -i "s|const WASM_PATH = './cube.wasm'|const WASM_PATH = './${WASM_FILE}'|" _site/shell.js
+
+          # GitHub Actions summary
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Hash |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| WASM | \`${WASM_HASH}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Files:**" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${WASM_FILE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`shell.js\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`index.html\`" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
