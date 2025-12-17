@@ -13,6 +13,11 @@
             overflow: hidden;
             background: #1a1a2e;
         }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
         #debug-log {
             position: fixed;
             top: 10px;
@@ -33,6 +38,7 @@
         .log-info { color: #0f0; }
         .log-warn { color: #ff0; }
         .log-error { color: #f00; }
+        .log-debug { color: #888; }
         #enter-vr {
             position: fixed;
             bottom: 20px;
@@ -98,6 +104,7 @@
     </style>
 </head>
 <body>
+<canvas id="render-canvas"></canvas>
 <div id="debug-log"></div>
 <button id="toggle-console">Console</button>
 <div id="status-bar">
@@ -107,17 +114,21 @@
     </div>
 </div>
 <button id="enter-vr">Enter VR</button>
-<script>
-    // On-screen debug console for Quest/mobile
+
+<script type="module">
+    import init, { init_core, handle_event } from './{{JS_FILE}}';
+
+    // ==========================================================================
+    // Debug Console
+    // ==========================================================================
     const debugLog = document.getElementById('debug-log');
     const maxLines = 50;
 
     function addLog(msg, type = 'info') {
         const line = document.createElement('div');
         line.className = 'log-' + type;
-        line.textContent = msg;
+        line.textContent = `[${type.toUpperCase()}] ${msg}`;
         debugLog.appendChild(line);
-        // Keep only last N lines
         while (debugLog.children.length > maxLines) {
             debugLog.removeChild(debugLog.firstChild);
         }
@@ -129,384 +140,973 @@
     const origWarn = console.warn;
     const origError = console.error;
     const origInfo = console.info;
+    const origDebug = console.debug;
 
     console.log = (...args) => { origLog(...args); addLog(args.join(' '), 'info'); };
     console.info = (...args) => { origInfo(...args); addLog(args.join(' '), 'info'); };
     console.warn = (...args) => { origWarn(...args); addLog(args.join(' '), 'warn'); };
     console.error = (...args) => { origError(...args); addLog(args.join(' '), 'error'); };
+    console.debug = (...args) => { origDebug(...args); addLog(args.join(' '), 'debug'); };
 
-    // WebXR state
-    let xrSession = null;
-    const enterVrBtn = document.getElementById('enter-vr');
-
-    // Show WebXR status and button if supported
-    if (navigator.xr) {
-        navigator.xr.isSessionSupported('immersive-vr').then(supported => {
-            addLog('WebXR immersive-vr: ' + (supported ? 'SUPPORTED' : 'not supported'), supported ? 'info' : 'warn');
-            if (supported) {
-                enterVrBtn.style.display = 'block';
-                addLog('Enter VR button shown');
-            }
-        }).catch(e => {
-            addLog('WebXR check failed: ' + e, 'error');
-        });
-    } else {
-        addLog('navigator.xr not available', 'warn');
-    }
-
-    // WebXR rendering state
-    let xrRefSpace = null;
-    let xrGlLayer = null;
-    let gl = null;
-
-    // Enter/Exit VR handler
-    enterVrBtn.addEventListener('click', async () => {
-        if (xrSession) {
-            // Exit VR
-            addLog('Exiting VR session...');
-            await xrSession.end();
-            return;
-        }
-
-        try {
-            addLog('Requesting immersive-vr session...');
-            xrSession = await navigator.xr.requestSession('immersive-vr', {
-                requiredFeatures: ['local-floor']
-            });
-            addLog('VR session started!', 'info');
-
-            enterVrBtn.textContent = 'Exit VR';
-            enterVrBtn.classList.add('exit-vr');
-
-            // Use pre-created xrCompatible context, or try to get one
-            if (window.xrGlContext) {
-                gl = window.xrGlContext;
-                addLog('Using pre-created xrCompatible WebGL2 context');
-            } else {
-                // Fallback: try to find canvas and get context
-                const canvas = document.querySelector('canvas');
-                if (!canvas) {
-                    addLog('No canvas found!', 'error');
-                    await xrSession.end();
-                    return;
-                }
-                addLog('Found canvas: ' + canvas.width + 'x' + canvas.height);
-
-                // Try to get existing context (won't work if wgpu created it without xrCompatible)
-                gl = canvas.getContext('webgl2');
-                if (!gl) {
-                    addLog('Failed to get WebGL2 context', 'error');
-                    await xrSession.end();
-                    return;
-                }
-                addLog('Got WebGL2 context (may not be xrCompatible)');
-
-                // Try to make it XR compatible
-                try {
-                    await gl.makeXRCompatible();
-                    addLog('Made context XR compatible');
-                } catch (e) {
-                    addLog('Failed to make context XR compatible: ' + e.message, 'error');
-                    await xrSession.end();
-                    return;
-                }
-            }
-
-            // Create XR layer
-            xrGlLayer = new XRWebGLLayer(xrSession, gl);
-            addLog('Created XRWebGLLayer: ' + xrGlLayer.framebufferWidth + 'x' + xrGlLayer.framebufferHeight);
-
-            // Set render state
-            await xrSession.updateRenderState({
-                baseLayer: xrGlLayer
-            });
-            addLog('Set XR render state');
-
-            // Get reference space
-            xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
-            addLog('Got local-floor reference space');
-
-            xrSession.addEventListener('end', () => {
-                addLog('VR session ended');
-                xrSession = null;
-                xrRefSpace = null;
-                xrGlLayer = null;
-                enterVrBtn.textContent = 'Enter VR';
-                enterVrBtn.classList.remove('exit-vr');
-            });
-
-            // Start XR render loop
-            xrSession.requestAnimationFrame(onXRFrame);
-            addLog('XR render loop started');
-
-        } catch (e) {
-            addLog('Failed to start VR: ' + e.message || e, 'error');
-            console.error(e);
-        }
-    });
-
-    // XR frame rendering
-    function onXRFrame(time, frame) {
-        if (!xrSession) return;
-
-        // Request next frame first
-        xrSession.requestAnimationFrame(onXRFrame);
-
-        const pose = frame.getViewerPose(xrRefSpace);
-        if (!pose) {
-            return; // No pose yet
-        }
-
-        // Bind the XR framebuffer
-        gl.bindFramebuffer(gl.FRAMEBUFFER, xrGlLayer.framebuffer);
-
-        // Clear to a color so we know it's working
-        gl.clearColor(0.1, 0.1, 0.3, 1.0); // Dark blue
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-        // Render each view (one per eye)
-        for (const view of pose.views) {
-            const viewport = xrGlLayer.getViewport(view);
-            gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
-
-            // Get view and projection matrices
-            const viewMatrix = view.transform.inverse.matrix;
-            const projMatrix = view.projectionMatrix;
-
-            // TODO: Pass these matrices to wgpu/Rust for actual rendering
-            // For now, just draw a simple colored quad to prove it works
-            drawSimpleScene(gl, viewMatrix, projMatrix, time);
-        }
-    }
-
-    // Simple WebGL rendering to test XR is working
-    let simpleProgram = null;
-    let cubeBuffer = null;
-    let cubeRotation = 0;
-
-    function drawSimpleScene(gl, viewMatrix, projMatrix, time) {
-        // Update rotation
-        cubeRotation = time * 0.001; // Rotate based on time
-        if (!simpleProgram) {
-            // Create a simple shader program
-            const vsSource = `
-                attribute vec3 aPosition;
-                uniform mat4 uView;
-                uniform mat4 uProj;
-                uniform mat4 uModel;
-                varying vec3 vColor;
-                void main() {
-                    gl_Position = uProj * uView * uModel * vec4(aPosition, 1.0);
-                    vColor = aPosition * 0.5 + 0.5; // Color based on position
-                }
-            `;
-            const fsSource = `
-                precision mediump float;
-                varying vec3 vColor;
-                void main() {
-                    gl_FragColor = vec4(vColor, 1.0);
-                }
-            `;
-
-            const vs = gl.createShader(gl.VERTEX_SHADER);
-            gl.shaderSource(vs, vsSource);
-            gl.compileShader(vs);
-            if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
-                addLog('VS error: ' + gl.getShaderInfoLog(vs), 'error');
-                return;
-            }
-
-            const fs = gl.createShader(gl.FRAGMENT_SHADER);
-            gl.shaderSource(fs, fsSource);
-            gl.compileShader(fs);
-            if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
-                addLog('FS error: ' + gl.getShaderInfoLog(fs), 'error');
-                return;
-            }
-
-            simpleProgram = gl.createProgram();
-            gl.attachShader(simpleProgram, vs);
-            gl.attachShader(simpleProgram, fs);
-            gl.linkProgram(simpleProgram);
-            if (!gl.getProgramParameter(simpleProgram, gl.LINK_STATUS)) {
-                addLog('Program error: ' + gl.getProgramInfoLog(simpleProgram), 'error');
-                return;
-            }
-
-            // Create cube vertices
-            const vertices = new Float32Array([
-                // Front face
-                -1, -1,  1,   1, -1,  1,   1,  1,  1,
-                -1, -1,  1,   1,  1,  1,  -1,  1,  1,
-                // Back face
-                -1, -1, -1,  -1,  1, -1,   1,  1, -1,
-                -1, -1, -1,   1,  1, -1,   1, -1, -1,
-                // Top face
-                -1,  1, -1,  -1,  1,  1,   1,  1,  1,
-                -1,  1, -1,   1,  1,  1,   1,  1, -1,
-                // Bottom face
-                -1, -1, -1,   1, -1, -1,   1, -1,  1,
-                -1, -1, -1,   1, -1,  1,  -1, -1,  1,
-                // Right face
-                 1, -1, -1,   1,  1, -1,   1,  1,  1,
-                 1, -1, -1,   1,  1,  1,   1, -1,  1,
-                // Left face
-                -1, -1, -1,  -1, -1,  1,  -1,  1,  1,
-                -1, -1, -1,  -1,  1,  1,  -1,  1, -1,
-            ]);
-
-            cubeBuffer = gl.createBuffer();
-            gl.bindBuffer(gl.ARRAY_BUFFER, cubeBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-
-            addLog('Created simple WebGL cube renderer');
-        }
-
-        gl.useProgram(simpleProgram);
-
-        // Set up vertex attribute
-        gl.bindBuffer(gl.ARRAY_BUFFER, cubeBuffer);
-        const posLoc = gl.getAttribLocation(simpleProgram, 'aPosition');
-        gl.enableVertexAttribArray(posLoc);
-        gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
-
-        // Set uniforms
-        const viewLoc = gl.getUniformLocation(simpleProgram, 'uView');
-        const projLoc = gl.getUniformLocation(simpleProgram, 'uProj');
-        const modelLoc = gl.getUniformLocation(simpleProgram, 'uModel');
-
-        gl.uniformMatrix4fv(viewLoc, false, viewMatrix);
-        gl.uniformMatrix4fv(projLoc, false, projMatrix);
-
-        // Model matrix: place cube 2 meters in front of user, rotating
-        const c = Math.cos(cubeRotation);
-        const s = Math.sin(cubeRotation);
-        const scale = 0.3;
-        // Rotation around Y axis + translation
-        const modelMatrix = new Float32Array([
-            scale * c,  0, scale * s, 0,
-            0,          scale, 0,     0,
-            -scale * s, 0, scale * c, 0,
-            0, 1, -2, 1  // x, y (1m up), z (-2m in front)
-        ]);
-        gl.uniformMatrix4fv(modelLoc, false, modelMatrix);
-
-        // Enable depth test
-        gl.enable(gl.DEPTH_TEST);
-
-        // Draw cube
-        gl.drawArrays(gl.TRIANGLES, 0, 36);
-    }
-
-    // Toggle debug log visibility with 'D' key or button
+    // Toggle console visibility
     const toggleConsoleBtn = document.getElementById('toggle-console');
     toggleConsoleBtn.addEventListener('click', () => {
         debugLog.classList.toggle('hidden');
     });
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'd' || e.key === 'D') {
-            debugLog.classList.toggle('hidden');
+        if (e.key === '`') debugLog.classList.toggle('hidden');
+    });
+
+    // ==========================================================================
+    // Shell State
+    // ==========================================================================
+    const canvas = document.getElementById('render-canvas');
+    let gl = null;
+    let frameNumber = 0;
+    let lastTime = 0;
+    const deviceId = 'default';
+
+    // Scene state managed by shell
+    const assets = new Map();      // asset_id -> loaded asset data
+    const volumes = new Map();     // volume_id -> volume render data
+    const textures = new Map();    // texture_id -> WebGL texture
+    const timers = new Map();      // timer_id -> timer handle
+
+    // Background color
+    let backgroundColor = [0.1, 0.1, 0.2, 1.0];
+
+    // ==========================================================================
+    // WebGL Setup
+    // ==========================================================================
+    function initWebGL() {
+        gl = canvas.getContext('webgl2', {
+            xrCompatible: true,
+            alpha: false,
+            antialias: true,
+            depth: true,
+            stencil: false,
+            powerPreference: 'high-performance'
+        });
+
+        if (!gl) {
+            console.error('WebGL2 not supported');
+            return false;
         }
-    });
 
-    // Gamepad status tracking
-    const gamepadDot = document.getElementById('gamepad-dot');
-    const gamepadStatus = document.getElementById('gamepad-status');
-    let gamepadConnected = false;
-    let gamepadWorking = false;
-    let lastGamepadTimestamp = 0;
+        // Store for WebXR
+        window.xrGlContext = gl;
+        window.xrCanvas = canvas;
 
-    window.addEventListener('gamepadconnected', (e) => {
-        gamepadConnected = true;
-        gamepadDot.className = 'status-dot connected';
-        gamepadStatus.textContent = e.gamepad.id.substring(0, 20) + '...';
-        addLog('Gamepad connected: ' + e.gamepad.id);
-    });
+        // Resize canvas to window
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
 
-    window.addEventListener('gamepaddisconnected', (e) => {
-        gamepadConnected = false;
-        gamepadWorking = false;
-        gamepadDot.className = 'status-dot';
-        gamepadStatus.textContent = 'No gamepad';
-        addLog('Gamepad disconnected: ' + e.gamepad.id);
-    });
+        console.log('WebGL2 initialized');
+        return true;
+    }
 
-    // Poll gamepad to detect input (working status)
-    function pollGamepad() {
+    function resizeCanvas() {
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = window.innerWidth * dpr;
+        canvas.height = window.innerHeight * dpr;
+        canvas.style.width = window.innerWidth + 'px';
+        canvas.style.height = window.innerHeight + 'px';
+
+        if (gl) {
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+
+        // Send resize event to core (using new nested structure)
+        if (window.coreReady) {
+            sendEvent({
+                category: 'Lifecycle',
+                event: {
+                    type: 'Resize',
+                    width: canvas.width,
+                    height: canvas.height,
+                    dpr: dpr
+                }
+            });
+        }
+    }
+
+    // ==========================================================================
+    // Event Sending
+    // ==========================================================================
+    function sendEvent(event) {
+        try {
+            const eventJson = JSON.stringify(event);
+            const commandsJson = handle_event(eventJson);
+            const commands = JSON.parse(commandsJson);
+            executeCommands(commands);
+        } catch (e) {
+            console.error('Error handling event:', e, event);
+        }
+    }
+
+    // ==========================================================================
+    // Command Execution
+    // ==========================================================================
+    function executeCommands(commands) {
+        for (const cmd of commands) {
+            executeCommand(cmd);
+        }
+    }
+
+    function executeCommand(cmd) {
+        // Commands now have nested structure: { category: "...", command: {...} }
+        const category = cmd.category;
+        const data = cmd.command;
+
+        switch (category) {
+            case 'Debug':
+                handleDebugCommand(data);
+                break;
+            case 'Environment':
+                handleEnvironmentCommand(data);
+                break;
+            case 'Asset':
+                handleAssetCommand(data);
+                break;
+            case 'Scene':
+                handleSceneCommand(data);
+                break;
+            case 'Animation':
+                handleAnimationCommand(data);
+                break;
+            case 'Material':
+                handleMaterialCommand(data);
+                break;
+            case 'Timer':
+                handleTimerCommand(data);
+                break;
+            case 'Xr':
+                handleXrCommand(data);
+                break;
+            case 'Network':
+                handleNetworkCommand(data);
+                break;
+            case 'Media':
+                handleMediaCommand(data);
+                break;
+            default:
+                console.debug('Unknown command category:', category);
+        }
+    }
+
+    function handleDebugCommand(cmd) {
+        if (cmd.action === 'Log') {
+            const level = cmd.level.toLowerCase();
+            const msg = cmd.message;
+            if (level === 'error') console.error('[Core]', msg);
+            else if (level === 'warn') console.warn('[Core]', msg);
+            else if (level === 'debug') console.debug('[Core]', msg);
+            else console.info('[Core]', msg);
+        }
+    }
+
+    function handleEnvironmentCommand(cmd) {
+        switch (cmd.action) {
+            case 'SetBackground':
+                if (cmd.Color) {
+                    backgroundColor = cmd.Color;
+                } else if (cmd.Transparent) {
+                    backgroundColor = [0, 0, 0, 0];
+                }
+                break;
+            case 'SetCamera':
+                // TODO: Update camera
+                break;
+            case 'SetLighting':
+                // TODO: Update lighting
+                break;
+        }
+    }
+
+    function handleAssetCommand(cmd) {
+        switch (cmd.action) {
+            case 'Load':
+                loadAsset(cmd.asset_id, cmd.path);
+                break;
+            case 'Cancel':
+                // TODO: Cancel asset loading
+                break;
+            case 'Unload':
+                assets.delete(cmd.asset_id);
+                break;
+        }
+    }
+
+    function handleSceneCommand(cmd) {
+        switch (cmd.action) {
+            case 'CreateVolume':
+                createVolume(cmd);
+                break;
+            case 'DestroyVolume':
+                volumes.delete(cmd.volume_id);
+                break;
+            case 'SetTransform':
+                if (volumes.has(cmd.volume_id)) {
+                    volumes.get(cmd.volume_id).transform = cmd.transform;
+                    // TODO: Handle animated transforms
+                }
+                break;
+            case 'SetVisible':
+                if (volumes.has(cmd.volume_id)) {
+                    volumes.get(cmd.volume_id).visible = cmd.visible;
+                }
+                break;
+        }
+    }
+
+    function handleAnimationCommand(cmd) {
+        // TODO: Implement animation commands
+        console.debug('Animation command:', cmd.action);
+    }
+
+    function handleMaterialCommand(cmd) {
+        // TODO: Implement material commands
+        console.debug('Material command:', cmd.action);
+    }
+
+    function handleTimerCommand(cmd) {
+        switch (cmd.action) {
+            case 'Set':
+                setTimer(cmd.timer_id, cmd.delay_ms, cmd.repeat);
+                break;
+            case 'Cancel':
+                if (timers.has(cmd.timer_id)) {
+                    clearTimeout(timers.get(cmd.timer_id));
+                    timers.delete(cmd.timer_id);
+                }
+                break;
+        }
+    }
+
+    function handleXrCommand(cmd) {
+        switch (cmd.action) {
+            case 'Enter':
+                enterXR(cmd.mode);
+                break;
+            case 'Exit':
+                exitXR();
+                break;
+        }
+    }
+
+    function handleNetworkCommand(cmd) {
+        // TODO: Implement WebSocket/WebRTC commands
+        console.debug('Network command:', cmd.type);
+    }
+
+    function handleMediaCommand(cmd) {
+        // TODO: Implement media commands
+        console.debug('Media command:', cmd.action);
+    }
+
+    // ==========================================================================
+    // Asset Loading
+    // ==========================================================================
+    async function loadAsset(assetId, path) {
+        sendEvent({
+            category: 'Asset',
+            event: {
+                type: 'LoadStarted',
+                asset_id: assetId,
+                path: path
+            }
+        });
+
+        try {
+            const response = await fetch(path);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const data = await response.arrayBuffer();
+
+            // Parse GLB/GLTF
+            const assetType = path.endsWith('.glb') ? 'Glb' :
+                             path.endsWith('.gltf') ? 'Gltf' :
+                             path.endsWith('.png') || path.endsWith('.jpg') ? 'Image' : 'Glb';
+
+            assets.set(assetId, { data, path, assetType });
+
+            sendEvent({
+                category: 'Asset',
+                event: {
+                    type: 'Loaded',
+                    asset_id: assetId,
+                    path: path,
+                    asset_type: assetType,
+                    meshes: [{ index: 0, name: null, vertex_count: 0, has_skeleton: false }],
+                    animations: [],
+                    skeletons: []
+                }
+            });
+
+        } catch (e) {
+            sendEvent({
+                category: 'Asset',
+                event: {
+                    type: 'LoadFailed',
+                    asset_id: assetId,
+                    error: e.message
+                }
+            });
+        }
+    }
+
+    // ==========================================================================
+    // Volume Management
+    // ==========================================================================
+    function createVolume(cmd) {
+        const volume = {
+            id: cmd.volume_id,
+            source: cmd.source,
+            transform: cmd.transform,
+            material: cmd.material,
+            visible: true
+        };
+
+        // Create primitive geometry if needed
+        if (cmd.source.Primitive) {
+            volume.geometry = createPrimitiveGeometry(cmd.source.Primitive);
+        }
+
+        volumes.set(cmd.volume_id, volume);
+
+        sendEvent({
+            category: 'Scene',
+            event: {
+                type: 'VolumeReady',
+                volume_id: cmd.volume_id
+            }
+        });
+    }
+
+    function createPrimitiveGeometry(primitive) {
+        // Create simple cube vertices for now
+        const vertices = new Float32Array([
+            // Front face
+            -1, -1,  1,   1, -1,  1,   1,  1,  1,
+            -1, -1,  1,   1,  1,  1,  -1,  1,  1,
+            // Back face
+            -1, -1, -1,  -1,  1, -1,   1,  1, -1,
+            -1, -1, -1,   1,  1, -1,   1, -1, -1,
+            // Top face
+            -1,  1, -1,  -1,  1,  1,   1,  1,  1,
+            -1,  1, -1,   1,  1,  1,   1,  1, -1,
+            // Bottom face
+            -1, -1, -1,   1, -1, -1,   1, -1,  1,
+            -1, -1, -1,   1, -1,  1,  -1, -1,  1,
+            // Right face
+             1, -1, -1,   1,  1, -1,   1,  1,  1,
+             1, -1, -1,   1,  1,  1,   1, -1,  1,
+            // Left face
+            -1, -1, -1,  -1, -1,  1,  -1,  1,  1,
+            -1, -1, -1,  -1,  1,  1,  -1,  1, -1,
+        ]);
+
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+        return { buffer, vertexCount: 36 };
+    }
+
+    // ==========================================================================
+    // Timers
+    // ==========================================================================
+    function setTimer(timerId, delayMs, repeat) {
+        if (timers.has(timerId)) {
+            clearTimeout(timers.get(timerId));
+        }
+
+        const callback = () => {
+            sendEvent({
+                category: 'Timer',
+                event: { type: 'Fired', timer_id: timerId }
+            });
+            if (repeat) {
+                timers.set(timerId, setTimeout(callback, delayMs));
+            } else {
+                timers.delete(timerId);
+            }
+        };
+
+        timers.set(timerId, setTimeout(callback, delayMs));
+    }
+
+    // ==========================================================================
+    // Input Handling
+    // ==========================================================================
+    function setupInputHandlers() {
+        // Keyboard
+        document.addEventListener('keydown', (e) => {
+            if (e.key === '`') return; // Reserved for console toggle
+            sendEvent({
+                category: 'Input',
+                event: {
+                    type: 'Keyboard',
+                    action: 'KeyDown',
+                    device_id: deviceId,
+                    key: e.key,
+                    code: e.code,
+                    shift: e.shiftKey,
+                    ctrl: e.ctrlKey,
+                    alt: e.altKey,
+                    meta: e.metaKey,
+                    repeat: e.repeat
+                }
+            });
+        });
+
+        document.addEventListener('keyup', (e) => {
+            sendEvent({
+                category: 'Input',
+                event: {
+                    type: 'Keyboard',
+                    action: 'KeyUp',
+                    device_id: deviceId,
+                    key: e.key,
+                    code: e.code,
+                    shift: e.shiftKey,
+                    ctrl: e.ctrlKey,
+                    alt: e.altKey,
+                    meta: e.metaKey,
+                    repeat: false
+                }
+            });
+        });
+
+        // Mouse
+        let lastMouseX = 0, lastMouseY = 0;
+        canvas.addEventListener('mousemove', (e) => {
+            sendEvent({
+                category: 'Input',
+                event: {
+                    type: 'Mouse',
+                    action: 'Move',
+                    device_id: deviceId,
+                    x: e.clientX,
+                    y: e.clientY,
+                    dx: e.clientX - lastMouseX,
+                    dy: e.clientY - lastMouseY
+                }
+            });
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+        });
+
+        canvas.addEventListener('mousedown', (e) => {
+            const button = ['Left', 'Middle', 'Right', 'Back', 'Forward'][e.button] || 'Left';
+            sendEvent({
+                category: 'Input',
+                event: {
+                    type: 'Mouse',
+                    action: 'Down',
+                    device_id: deviceId,
+                    x: e.clientX,
+                    y: e.clientY,
+                    button: button
+                }
+            });
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            const button = ['Left', 'Middle', 'Right', 'Back', 'Forward'][e.button] || 'Left';
+            sendEvent({
+                category: 'Input',
+                event: {
+                    type: 'Mouse',
+                    action: 'Up',
+                    device_id: deviceId,
+                    x: e.clientX,
+                    y: e.clientY,
+                    button: button
+                }
+            });
+        });
+
+        canvas.addEventListener('wheel', (e) => {
+            sendEvent({
+                category: 'Input',
+                event: {
+                    type: 'Mouse',
+                    action: 'Wheel',
+                    device_id: deviceId,
+                    x: e.clientX,
+                    y: e.clientY,
+                    dx: e.deltaX,
+                    dy: e.deltaY
+                }
+            });
+        });
+
+        // Touch
+        canvas.addEventListener('touchstart', (e) => {
+            sendEvent({
+                category: 'Input',
+                event: {
+                    type: 'Touch',
+                    action: 'Start',
+                    device_id: deviceId,
+                    touches: Array.from(e.touches).map(t => ({
+                        id: t.identifier,
+                        x: t.clientX,
+                        y: t.clientY,
+                        force: t.force || null
+                    }))
+                }
+            });
+        });
+
+        canvas.addEventListener('touchmove', (e) => {
+            sendEvent({
+                category: 'Input',
+                event: {
+                    type: 'Touch',
+                    action: 'Move',
+                    device_id: deviceId,
+                    touches: Array.from(e.touches).map(t => ({
+                        id: t.identifier,
+                        x: t.clientX,
+                        y: t.clientY,
+                        force: t.force || null
+                    }))
+                }
+            });
+        });
+
+        canvas.addEventListener('touchend', (e) => {
+            sendEvent({
+                category: 'Input',
+                event: {
+                    type: 'Touch',
+                    action: 'End',
+                    device_id: deviceId,
+                    touches: Array.from(e.changedTouches).map(t => ({
+                        id: t.identifier,
+                        x: t.clientX,
+                        y: t.clientY,
+                        force: null
+                    }))
+                }
+            });
+        });
+
+        // Gamepad
+        const gamepadDot = document.getElementById('gamepad-dot');
+        const gamepadStatus = document.getElementById('gamepad-status');
+
+        window.addEventListener('gamepadconnected', (e) => {
+            gamepadDot.className = 'status-dot connected';
+            gamepadStatus.textContent = e.gamepad.id.substring(0, 20) + '...';
+            sendEvent({
+                category: 'Input',
+                event: {
+                    type: 'Gamepad',
+                    action: 'Connected',
+                    device_id: 'gamepad-' + e.gamepad.index,
+                    name: e.gamepad.id,
+                    axes_count: e.gamepad.axes.length,
+                    buttons_count: e.gamepad.buttons.length
+                }
+            });
+        });
+
+        window.addEventListener('gamepaddisconnected', (e) => {
+            gamepadDot.className = 'status-dot';
+            gamepadStatus.textContent = 'No gamepad';
+            sendEvent({
+                category: 'Input',
+                event: {
+                    type: 'Gamepad',
+                    action: 'Disconnected',
+                    device_id: 'gamepad-' + e.gamepad.index
+                }
+            });
+        });
+    }
+
+    // Poll gamepads each frame
+    function pollGamepads() {
         const gamepads = navigator.getGamepads();
         for (const gp of gamepads) {
             if (!gp) continue;
 
-            // Check if timestamp changed (input received)
-            if (gp.timestamp > lastGamepadTimestamp) {
-                lastGamepadTimestamp = gp.timestamp;
-                if (!gamepadWorking && gamepadConnected) {
-                    gamepadWorking = true;
-                    gamepadDot.className = 'status-dot working';
-                    addLog('Gamepad input detected - working!');
-                }
-            }
+            // Check for any significant input
+            const hasInput = gp.axes.some(a => Math.abs(a) > 0.1) ||
+                            gp.buttons.some(b => b.pressed || b.value > 0.1);
 
-            // Also check axes/buttons for any non-zero values
-            if (!gamepadWorking && gamepadConnected) {
-                const hasInput = gp.axes.some(a => Math.abs(a) > 0.1) ||
-                                 gp.buttons.some(b => b.pressed);
-                if (hasInput) {
-                    gamepadWorking = true;
-                    gamepadDot.className = 'status-dot working';
-                    addLog('Gamepad input detected - working!');
-                }
-            }
-        }
-        requestAnimationFrame(pollGamepad);
-    }
-    pollGamepad();
-</script>
-<script type="module">
-    import init from './{{JS_FILE}}';
-
-    // Pre-create a canvas with xrCompatible context before wgpu initializes
-    // This ensures WebXR can use the same context later
-    async function setupAndInit() {
-        if (navigator.xr) {
-            try {
-                const supported = await navigator.xr.isSessionSupported('immersive-vr');
-                if (supported) {
-                    console.log('Pre-creating xrCompatible canvas for WebXR...');
-
-                    // Create canvas element
-                    const canvas = document.createElement('canvas');
-                    canvas.id = 'wgpu-canvas';
-                    document.body.appendChild(canvas);
-
-                    // Get WebGL2 context with xrCompatible
-                    const gl = canvas.getContext('webgl2', {
-                        xrCompatible: true,
-                        alpha: false,
-                        antialias: true,
-                        depth: true,
-                        stencil: false,
-                        powerPreference: 'high-performance'
-                    });
-
-                    if (gl) {
-                        await gl.makeXRCompatible();
-                        console.log('Canvas is xrCompatible, stored for WebXR use');
-                        // Store gl context globally for WebXR to use later
-                        window.xrGlContext = gl;
-                        window.xrCanvas = canvas;
+            if (hasInput) {
+                sendEvent({
+                    category: 'Input',
+                    event: {
+                        type: 'Gamepad',
+                        action: 'Input',
+                        device_id: 'gamepad-' + gp.index,
+                        axes: Array.from(gp.axes),
+                        buttons: gp.buttons.map(b => [b.value, b.pressed])
                     }
+                });
+            }
+        }
+    }
+
+    // ==========================================================================
+    // WebXR Support
+    // ==========================================================================
+    let xrSession = null;
+    let xrRefSpace = null;
+    let xrGlLayer = null;
+
+    const enterVrBtn = document.getElementById('enter-vr');
+
+    async function checkXRSupport() {
+        if (!navigator.xr) {
+            console.log('WebXR not available');
+            return { vr: false, ar: false };
+        }
+
+        const [vr, ar] = await Promise.all([
+            navigator.xr.isSessionSupported('immersive-vr').catch(() => false),
+            navigator.xr.isSessionSupported('immersive-ar').catch(() => false)
+        ]);
+
+        if (vr) {
+            enterVrBtn.style.display = 'block';
+            console.log('WebXR VR supported');
+        }
+
+        return { vr, ar };
+    }
+
+    enterVrBtn.addEventListener('click', () => {
+        if (xrSession) {
+            exitXR();
+        } else {
+            enterXR('ImmersiveVr');
+        }
+    });
+
+    async function enterXR(mode) {
+        if (xrSession) return;
+
+        try {
+            const sessionMode = mode === 'ImmersiveAr' ? 'immersive-ar' : 'immersive-vr';
+            sendEvent({
+                category: 'Xr',
+                event: { type: 'SessionChanged', state: 'Starting' }
+            });
+
+            xrSession = await navigator.xr.requestSession(sessionMode, {
+                requiredFeatures: ['local-floor']
+            });
+
+            enterVrBtn.textContent = 'Exit VR';
+            enterVrBtn.classList.add('exit-vr');
+
+            await gl.makeXRCompatible();
+
+            xrGlLayer = new XRWebGLLayer(xrSession, gl);
+            await xrSession.updateRenderState({ baseLayer: xrGlLayer });
+
+            xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
+
+            xrSession.addEventListener('end', () => {
+                xrSession = null;
+                xrRefSpace = null;
+                xrGlLayer = null;
+                enterVrBtn.textContent = 'Enter VR';
+                enterVrBtn.classList.remove('exit-vr');
+                sendEvent({
+                    category: 'Xr',
+                    event: { type: 'SessionChanged', state: 'None' }
+                });
+            });
+
+            sendEvent({
+                category: 'Xr',
+                event: { type: 'SessionChanged', state: 'Active' }
+            });
+            xrSession.requestAnimationFrame(onXRFrame);
+
+        } catch (e) {
+            console.error('Failed to enter XR:', e);
+            sendEvent({
+                category: 'Xr',
+                event: { type: 'SessionChanged', state: 'None' }
+            });
+        }
+    }
+
+    async function exitXR() {
+        if (xrSession) {
+            sendEvent({
+                category: 'Xr',
+                event: { type: 'SessionChanged', state: 'Ending' }
+            });
+            await xrSession.end();
+        }
+    }
+
+    function onXRFrame(time, frame) {
+        if (!xrSession) return;
+        xrSession.requestAnimationFrame(onXRFrame);
+
+        const pose = frame.getViewerPose(xrRefSpace);
+        if (!pose) return;
+
+        // Send head pose to core
+        const headPos = pose.transform.position;
+        const headOri = pose.transform.orientation;
+        sendEvent({
+            category: 'Xr',
+            event: {
+                type: 'HeadPose',
+                position: [headPos.x, headPos.y, headPos.z],
+                orientation: [headOri.x, headOri.y, headOri.z, headOri.w]
+            }
+        });
+
+        // Send controller poses
+        for (const source of xrSession.inputSources) {
+            if (source.gripSpace) {
+                const gripPose = frame.getPose(source.gripSpace, xrRefSpace);
+                if (gripPose) {
+                    const hand = source.handedness === 'left' ? 'Left' : 'Right';
+                    const pos = gripPose.transform.position;
+                    const ori = gripPose.transform.orientation;
+
+                    const gamepad = source.gamepad;
+                    const buttons = gamepad ? gamepad.buttons.map(b => [b.value, b.pressed]) : [];
+                    const axes = gamepad ? Array.from(gamepad.axes) : [];
+
+                    sendEvent({
+                        category: 'Xr',
+                        event: {
+                            type: 'ControllerPose',
+                            hand: hand,
+                            pose: {
+                                position: [pos.x, pos.y, pos.z],
+                                orientation: [ori.x, ori.y, ori.z, ori.w]
+                            },
+                            grip_pose: null,
+                            buttons: buttons,
+                            axes: axes
+                        }
+                    });
                 }
-            } catch (e) {
-                console.log('WebXR pre-setup failed (non-fatal):', e);
             }
         }
 
-        // Now initialize wgpu/fastn
-        init();
+        // Render XR frame
+        gl.bindFramebuffer(gl.FRAMEBUFFER, xrGlLayer.framebuffer);
+        gl.clearColor(...backgroundColor);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        for (const view of pose.views) {
+            const viewport = xrGlLayer.getViewport(view);
+            gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+            renderScene(view.transform.inverse.matrix, view.projectionMatrix);
+        }
     }
 
-    setupAndInit();
+    // ==========================================================================
+    // Rendering
+    // ==========================================================================
+    let shaderProgram = null;
+
+    function initShaders() {
+        const vsSource = `
+            attribute vec3 aPosition;
+            uniform mat4 uView;
+            uniform mat4 uProj;
+            uniform mat4 uModel;
+            varying vec3 vColor;
+            void main() {
+                gl_Position = uProj * uView * uModel * vec4(aPosition, 1.0);
+                vColor = aPosition * 0.5 + 0.5;
+            }
+        `;
+        const fsSource = `
+            precision mediump float;
+            varying vec3 vColor;
+            void main() {
+                gl_FragColor = vec4(vColor, 1.0);
+            }
+        `;
+
+        const vs = gl.createShader(gl.VERTEX_SHADER);
+        gl.shaderSource(vs, vsSource);
+        gl.compileShader(vs);
+
+        const fs = gl.createShader(gl.FRAGMENT_SHADER);
+        gl.shaderSource(fs, fsSource);
+        gl.compileShader(fs);
+
+        shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vs);
+        gl.attachShader(shaderProgram, fs);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            console.error('Shader error:', gl.getProgramInfoLog(shaderProgram));
+        }
+    }
+
+    function renderScene(viewMatrix, projMatrix) {
+        if (!shaderProgram) return;
+
+        gl.useProgram(shaderProgram);
+        gl.enable(gl.DEPTH_TEST);
+
+        const viewLoc = gl.getUniformLocation(shaderProgram, 'uView');
+        const projLoc = gl.getUniformLocation(shaderProgram, 'uProj');
+        const modelLoc = gl.getUniformLocation(shaderProgram, 'uModel');
+
+        gl.uniformMatrix4fv(viewLoc, false, viewMatrix);
+        gl.uniformMatrix4fv(projLoc, false, projMatrix);
+
+        // Render all visible volumes
+        for (const [id, vol] of volumes) {
+            if (!vol.visible || !vol.geometry) continue;
+
+            const t = vol.transform;
+            const modelMatrix = createModelMatrix(t.position, t.rotation, t.scale);
+            gl.uniformMatrix4fv(modelLoc, false, modelMatrix);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, vol.geometry.buffer);
+            const posLoc = gl.getAttribLocation(shaderProgram, 'aPosition');
+            gl.enableVertexAttribArray(posLoc);
+            gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+            gl.drawArrays(gl.TRIANGLES, 0, vol.geometry.vertexCount);
+        }
+    }
+
+    function createModelMatrix(position, rotation, scale) {
+        const [px, py, pz] = position;
+        const [qx, qy, qz, qw] = rotation;
+        const [sx, sy, sz] = scale;
+
+        const x2 = qx + qx, y2 = qy + qy, z2 = qz + qz;
+        const xx = qx * x2, xy = qx * y2, xz = qx * z2;
+        const yy = qy * y2, yz = qy * z2, zz = qz * z2;
+        const wx = qw * x2, wy = qw * y2, wz = qw * z2;
+
+        return new Float32Array([
+            (1 - (yy + zz)) * sx, (xy + wz) * sx, (xz - wy) * sx, 0,
+            (xy - wz) * sy, (1 - (xx + zz)) * sy, (yz + wx) * sy, 0,
+            (xz + wy) * sz, (yz - wx) * sz, (1 - (xx + yy)) * sz, 0,
+            px, py, pz, 1
+        ]);
+    }
+
+    // ==========================================================================
+    // Main Loop
+    // ==========================================================================
+    function renderFrame(time) {
+        if (xrSession) {
+            requestAnimationFrame(renderFrame);
+            return;
+        }
+
+        const dt = lastTime > 0 ? (time - lastTime) / 1000 : 0.016;
+        lastTime = time;
+
+        // Send frame event to core
+        sendEvent({
+            category: 'Lifecycle',
+            event: {
+                type: 'Frame',
+                time: time / 1000,
+                dt: dt,
+                frame: frameNumber++
+            }
+        });
+
+        // Poll gamepads
+        pollGamepads();
+
+        // Render
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.clearColor(...backgroundColor);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        const aspect = canvas.width / canvas.height;
+        const fov = Math.PI / 4;
+        const near = 0.1, far = 100;
+
+        const viewMatrix = new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, -5, 1
+        ]);
+
+        const f = 1 / Math.tan(fov / 2);
+        const projMatrix = new Float32Array([
+            f / aspect, 0, 0, 0,
+            0, f, 0, 0,
+            0, 0, (far + near) / (near - far), -1,
+            0, 0, (2 * far * near) / (near - far), 0
+        ]);
+
+        renderScene(viewMatrix, projMatrix);
+
+        requestAnimationFrame(renderFrame);
+    }
+
+    // ==========================================================================
+    // Initialization
+    // ==========================================================================
+    async function main() {
+        console.log('Shell starting...');
+
+        if (!initWebGL()) {
+            console.error('Failed to initialize WebGL');
+            return;
+        }
+
+        initShaders();
+
+        await init();
+
+        init_core();
+        window.coreReady = true;
+
+        const xrSupport = await checkXRSupport();
+
+        setupInputHandlers();
+
+        // Send Init event to Core (using new nested structure)
+        const dpr = window.devicePixelRatio || 1;
+        sendEvent({
+            category: 'Lifecycle',
+            event: {
+                type: 'Init',
+                platform: 'WebGL',
+                viewport_width: canvas.width,
+                viewport_height: canvas.height,
+                dpr: dpr,
+                xr_supported: xrSupport.vr || xrSupport.ar,
+                xr_immersive_vr: xrSupport.vr,
+                xr_immersive_ar: xrSupport.ar,
+                webrtc_supported: !!window.RTCPeerConnection,
+                websocket_supported: !!window.WebSocket,
+                features: []
+            }
+        });
+
+        console.log('Shell initialized, starting render loop');
+
+        requestAnimationFrame(renderFrame);
+    }
+
+    main().catch(e => console.error('Startup error:', e));
 </script>
 </body>
 </html>

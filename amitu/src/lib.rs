@@ -1,5 +1,9 @@
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn main() {
-    // hello! lets see if target caching worked
-    fastn::render_glb("cube.glb");
-}
+//! Amitu - Example spatial application using fastn
+//!
+//! This crate is compiled to WASM and loaded by fastn-shell.
+//! It demonstrates using the simplified fastn API.
+
+use fastn::{fastn_app, example_core::ExampleCore};
+
+// Use the example core from fastn - this handles cube loading, VR toggle, etc.
+fastn_app!(ExampleCore, ExampleCore::new());
