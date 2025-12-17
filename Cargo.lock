@@ -15,9 +15,19 @@ dependencies = [
 name = "fastn"
 version = "0.1.0"
 dependencies = [
+ "fastn-macros",
  "log",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "fastn-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
