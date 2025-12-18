@@ -21,7 +21,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Checkout fastn-stack/spatial (contains fastn crate and web shell)
+      - name: Checkout fastn-stack/spatial (contains fastn crate and CLI)
         uses: actions/checkout@v4
         with:
           repository: fastn-stack/spatial
@@ -45,42 +45,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build WASM
-        run: cargo build -p amitu --target wasm32-unknown-unknown --release
+      - name: Build using fastn CLI
+        run: cargo run -p amitu --no-default-features -- build
 
       - name: Prepare pages
         run: |
           mkdir -p _site
-
-          # Generate content hash for cache busting
-          WASM_HASH=$(sha256sum target/wasm32-unknown-unknown/release/amitu.wasm | cut -c1-8)
-          WASM_FILE="amitu.${WASM_HASH}.wasm"
-
-          # Copy web shell files (multi-shell architecture)
-          cp fastn-spatial/fastn-shell-web/index.html _site/
-          cp fastn-spatial/fastn-shell-web/shell-common.js _site/
-          cp fastn-spatial/fastn-shell-web/shell-webgpu.js _site/
-          cp fastn-spatial/fastn-shell-web/shell-webgl-xr.js _site/
-
-          # Copy WASM with hashed filename
-          cp target/wasm32-unknown-unknown/release/amitu.wasm "_site/${WASM_FILE}"
-
-          # Update shell-common.js to load hashed WASM
-          sed -i "s|const WASM_PATH = './cube.wasm'|const WASM_PATH = './${WASM_FILE}'|" _site/shell-common.js
+          cp -r amitu/dist/* _site/
 
           # GitHub Actions summary
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| File | Hash |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
-          echo "| WASM | \`${WASM_HASH}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Files:**" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${WASM_FILE}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`shell-common.js\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`shell-webgpu.js\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`shell-webgl-xr.js\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`index.html\`" >> $GITHUB_STEP_SUMMARY
+          ls -1 _site/ | while read f; do echo "- \`$f\`" >> $GITHUB_STEP_SUMMARY; done
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

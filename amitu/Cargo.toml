@@ -6,5 +6,9 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib"]
 
+[[bin]]
+name = "amitu"
+path = "src/main.rs"
+
 [dependencies]
 fastn.workspace = true
