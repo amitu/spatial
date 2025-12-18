@@ -46,7 +46,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build using fastn CLI
-        run: cargo run -p amitu --no-default-features -- build
+        run: cargo run -p amitu -- build
 
       - name: Prepare pages
         run: |
